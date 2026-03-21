@@ -9,7 +9,7 @@ from openpyxl.styles import Font, PatternFill, Alignment
 # --- Config ---
 BASE_URL = "https://api.tcgdex.net/v2/en"
 BULBAPEDIA_BASE = "https://bulbapedia.bulbagarden.net/wiki"
-OUTPUT_DIR = "pokemon_cards"
+OUTPUT_DIR = os.path.join("data", "output")
 IMG_SMALL_DIR = os.path.join(OUTPUT_DIR, "images_small")
 IMG_LARGE_DIR = os.path.join(OUTPUT_DIR, "images_large")
 EXCEL_PATH = os.path.join(OUTPUT_DIR, "pokemon_cards.xlsx")
