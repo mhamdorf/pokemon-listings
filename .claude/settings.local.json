@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(uv run:*)",
+      "Bash(curl -s https://api.pokemontcg.io/v2/cards/swsh1-1)",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(json.dumps\\(d.get\\(''''data'''',d\\), indent=2\\)\\)\")",
+      "WebFetch(domain:docs.pokemontcg.io)",
+      "Bash(curl -s https://api.tcgdex.net/v2/en/cards/swsh1-1)",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(json.dumps\\(d, indent=2\\)\\)\")",
+      "WebSearch",
+      "Bash(curl -s \"https://www.binderforge.com/sitemap.xml\" --max-time 30 -A \"Mozilla/5.0 \\(Windows NT 10.0; Win64; x64\\) AppleWebKit/537.36\")",
+      "Bash(curl -s \"https://www.binderforge.com/sitemap_index.xml\" --max-time 30 -A \"Mozilla/5.0\")",
+      "WebFetch(domain:www.binderforge.com)",
+      "Bash(curl -s https://www.binderforge.com/ascended-heroes-master-set/ --max-time 30 -A \"Mozilla/5.0 \\(Windows NT 10.0; Win64; x64\\) AppleWebKit/537.36\")",
+      "Bash(curl -s https://www.binderforge.com/ascended-heroes-master-set/ --max-time 30 -A \"Mozilla/5.0 \\(Windows NT 10.0; Win64; x64\\) AppleWebKit/537.36 \\(KHTML, like Gecko\\) Chrome/120.0.0.0 Safari/537.36\")"
+    ]
+  }
+}
