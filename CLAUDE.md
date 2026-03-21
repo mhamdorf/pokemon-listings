@@ -24,6 +24,10 @@ uv add <package>
 ## Project Structure
 
 - `main.py` — entry point
-- `data/output/` — generated output files (gitignored)
+- `scripts/` — standalone data pipeline scripts
+- `data/input/` — manually provided input files (e.g. set lists, config)
+- `data/output/` — all generated files: Excel workbooks, images (gitignored)
 - `pyproject.toml` — project metadata and dependencies (Python 3.12+)
 - `uv.lock` — locked dependency versions (commit this)
+
+All scripts must write outputs to `data/output/` and read inputs from `data/input/`.
