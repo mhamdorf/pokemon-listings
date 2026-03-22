@@ -2,28 +2,39 @@
 build-catalogue.py
 
 Main pipeline. Reads data/input/reference.xlsx for set configuration,
-fetches card data from TCGdex, determines variants per card, and writes
-the master catalogue to data/output/catalogue.xlsx. Also downloads one
-image per card (shared across all variants).
+fetches card data from TCGdex, and writes the master catalogue to
+data/output/catalogue.xlsx. Also downloads one image per card (large +
+small) shared across all variants.
+
+Output workbook sheets:
+  Sets  — one row per set (summary), formatted as an Excel Table
+  Cards — one row per card, every available field from TCGdex (master
+          reference), formatted as an Excel Table
+
+Slice views (e.g. Catalogue for listings, Website export) are built as
+Power Query queries reading from the Cards table — no script changes
+needed to add or remove columns from a view.
+
+Supports incremental builds — if catalogue.xlsx already exists, new sets
+are appended and already-processed sets are skipped automatically.
 
 Usage:
-    # Process all in-scope sets
-    uv run python scripts/build-catalogue.py
-
-    # Process a single set
-    uv run python scripts/build-catalogue.py --set me02.5
-
-    # Dry run — no images downloaded, no file written
-    uv run python scripts/build-catalogue.py --dry-run
+    uv run python scripts/build-catalogue.py              # all in-scope sets
+    uv run python scripts/build-catalogue.py --set sv10   # single set
+    uv run python scripts/build-catalogue.py --set sv10 --dry-run
 """
 
+import sys
 import requests
 import argparse
 import os
 import re
 import time
+
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment
+from openpyxl.worksheet.table import Table
 
 # --- Paths ---
 INPUT_PATH  = os.path.join("data", "input", "reference.xlsx")
@@ -34,11 +45,14 @@ IMG_DIR     = os.path.join("data", "output", "images")
 TCGDEX_URL      = "https://api.tcgdex.net/v2/en"
 FRANKFURTER_URL = "https://api.frankfurter.app/latest?from=USD&to=AUD"
 
-# --- Styling ---
-HEADER_FILL  = PatternFill("solid", start_color="1F4E79")
-HEADER_FONT  = Font(bold=True, color="FFFFFF", name="Arial", size=11)
-ALT_FILL     = PatternFill("solid", start_color="DCE6F1")
-NORMAL_FONT  = Font(name="Arial", size=10)
+# --- Styling (soft UI — Linear/Stripe aesthetic) ---
+ACCENT_COLOR      = "5C5BDB"
+HEADER_FILL       = PatternFill("solid", start_color=ACCENT_COLOR)
+HEADER_FONT       = Font(bold=True, color="FFFFFF", name="Calibri", size=11)
+ALT_FILL          = PatternFill("solid", start_color="F4F3FF")
+NORMAL_FONT       = Font(name="Calibri", size=10)
+HEADER_ROW_HEIGHT = 26
+BODY_ROW_HEIGHT   = 16
 
 
 # ---------------------------------------------------------------------------
@@ -59,13 +73,19 @@ def fetch(url, retries=3):
                 return None
 
 
-def sanitize_filename(name):
-    return re.sub(r'[\\/*?:"<>|]', "", name).strip().replace(" ", "_")
+def slugify(name):
+    """Convert a name to a filename-safe slug."""
+    name = name.lower()
+    name = re.sub(r"['\u2019\u2018`]", "", name)  # strip apostrophes
+    name = re.sub(r"[^a-z0-9]+", "-", name)        # non-alphanumeric → hyphen
+    return name.strip("-")
 
 
-def download_image(url, filepath, retries=3):
+def _download_file(url, filepath, retries=3):
+    """Download a single file if it doesn't already exist."""
     if os.path.exists(filepath):
         return True
+    os.makedirs(os.path.dirname(filepath), exist_ok=True)
     for attempt in range(retries):
         try:
             r = requests.get(url, timeout=20, stream=True)
@@ -82,6 +102,25 @@ def download_image(url, filepath, retries=3):
                 return False
 
 
+def download_images(image_base, series_id, set_id, local_id, card_name):
+    """
+    Download large (high.jpg) and small (low.jpg) card images.
+    Stored at: images/{large|small}/{series_id}/{set_id}/{local_id}_{slug}.jpg
+    Returns (large_rel_path, small_rel_path) as forward-slash relative paths.
+    """
+    if not image_base:
+        return "", ""
+
+    fname      = f"{local_id}_{slugify(card_name)}.jpg"
+    large_path = os.path.join(IMG_DIR, "large", series_id, set_id, fname)
+    small_path = os.path.join(IMG_DIR, "small", series_id, set_id, fname)
+
+    _download_file(f"{image_base}/high.jpg", large_path)
+    _download_file(f"{image_base}/low.jpg",  small_path)
+
+    return large_path.replace("\\", "/"), small_path.replace("\\", "/")
+
+
 def get_usd_to_aud():
     data = fetch(FRANKFURTER_URL)
     if data:
@@ -91,6 +130,57 @@ def get_usd_to_aud():
             return rate
     print("  [WARN] Could not fetch exchange rate — price_aud_converted will be empty")
     return None
+
+
+# ---------------------------------------------------------------------------
+# Stringify helpers for complex API fields
+# ---------------------------------------------------------------------------
+
+def _str_attacks(attacks):
+    if not attacks:
+        return ""
+    parts = []
+    for a in attacks:
+        cost   = ",".join(a.get("cost") or [])
+        name   = a.get("name", "")
+        damage = a.get("damage", "")
+        effect = a.get("effect", "")
+        part   = name
+        if cost:
+            part += f" [{cost}]"
+        if damage:
+            part += f" {damage}"
+        if effect:
+            part += f" — {effect}"
+        parts.append(part)
+    return " | ".join(parts)
+
+
+def _str_abilities(abilities):
+    if not abilities:
+        return ""
+    parts = []
+    for a in abilities:
+        atype  = a.get("type", "")
+        name   = a.get("name", "")
+        effect = a.get("effect", "")
+        part   = f"{atype}: {name}" if atype else name
+        if effect:
+            part += f" — {effect}"
+        parts.append(part)
+    return " | ".join(parts)
+
+
+def _str_weakness_resistance(items):
+    if not items:
+        return ""
+    return ", ".join(f"{w.get('type', '')} {w.get('value', '')}" for w in items)
+
+
+def _str_list(lst):
+    if not lst:
+        return ""
+    return ", ".join(str(x) for x in lst)
 
 
 # ---------------------------------------------------------------------------
@@ -109,11 +199,11 @@ def load_sets(wb, target_set_id=None):
         if target_set_id and set_id != target_set_id:
             continue
         sets[set_id] = {
-            "set_id": set_id,
-            "set_name": set_name,
-            "series_id": series_id,
+            "set_id":      set_id,
+            "set_name":    set_name,
+            "series_id":   series_id,
             "series_name": series_name,
-            "set_type": set_type,
+            "set_type":    set_type,
         }
     return sets
 
@@ -126,7 +216,7 @@ def load_rarities(wb):
             continue
         rarity, base_finish, can_reverse, *_ = row
         rarities[rarity] = {
-            "base_finish": base_finish,
+            "base_finish":      base_finish,
             "can_reverse_holo": (can_reverse == "Yes"),
         }
     return rarities
@@ -140,7 +230,7 @@ def load_overrides(wb):
             continue
         set_id, local_id, card_name, variants_str, reviewed_by, reviewed_date, notes = row
         if not reviewed_by or not reviewed_date:
-            continue  # unreviewed rows are ignored
+            continue
         key = (set_id, str(local_id))
         overrides[key] = [v.strip() for v in variants_str.split("|") if v.strip()]
     return overrides
@@ -151,17 +241,11 @@ def load_overrides(wb):
 # ---------------------------------------------------------------------------
 
 def get_variants_for_card(card, set_info, rarities, overrides):
-    """
-    Returns a list of variant label strings for this card.
-
-    Special sets: use override sheet (must be reviewed).
-    Main sets: apply rarity rules; unknown rarity defaults to no reverse holo.
-    """
     set_id   = set_info["set_id"]
     set_type = set_info["set_type"]
     local_id = card.get("localId", "")
     rarity   = card.get("rarity", "") or ""
-    tcg_vars = card.get("variants", {})
+    tcg_vars = card.get("variants", {}) or {}
 
     if set_type == "special":
         key = (set_id, local_id)
@@ -172,13 +256,11 @@ def get_variants_for_card(card, set_info, rarities, overrides):
             )
         return overrides[key]
 
-    # Main set — apply rarity rules
     rarity_rule = rarities.get(rarity, {"base_finish": "Holo", "can_reverse_holo": False})
-    base_finish = rarity_rule["base_finish"]   # "Normal" or "Holo"
+    base_finish = rarity_rule["base_finish"]
     can_reverse = rarity_rule["can_reverse_holo"]
 
     variants = [base_finish]
-
     if tcg_vars.get("firstEdition"):
         variants.append("First Edition")
     if tcg_vars.get("wPromo"):
@@ -193,44 +275,30 @@ def get_variants_for_card(card, set_info, rarities, overrides):
 # Excel output
 # ---------------------------------------------------------------------------
 
-def setup_workbook():
-    wb = Workbook()
-    wb.remove(wb.active)
-
-    # --- Sets sheet ---
-    ws_sets = wb.create_sheet("Sets")
-    sets_headers = ["Set ID", "Set Name", "Series ID", "Series Name", "Set Type",
-                    "Total Cards", "Release Date"]
-    _write_header(ws_sets, sets_headers, [14, 28, 12, 20, 12, 14, 14])
-
-    # --- Cards sheet ---
-    ws_cards = wb.create_sheet("Cards")
-    cards_headers = ["Card ID", "Set ID", "Local ID", "Name", "Rarity",
-                     "HP", "Types", "Stage", "Illustrator", "Regulation Mark",
-                     "Image API", "Image Custom"]
-    _write_header(ws_cards, cards_headers, [18, 12, 10, 28, 26, 6, 14, 14, 24, 16, 50, 20])
-
-    # --- Variants sheet ---
-    ws_variants = wb.create_sheet("Variants")
-    variants_headers = ["Variant ID", "Card ID", "Set ID", "Local ID", "Card Name",
-                        "Variant Label", "Finish", "Image API", "Image Custom",
-                        "Price USD (TCGPlayer)", "Price AUD (Converted)", "Price AUD (eBay)"]
-    _write_header(ws_variants, variants_headers,
-                  [28, 18, 12, 10, 28, 30, 14, 50, 20, 20, 20, 18])
-
-    return wb, ws_sets, ws_cards, ws_variants
-
-
 def _write_header(ws, headers, col_widths):
     for col, h in enumerate(headers, 1):
         cell = ws.cell(row=1, column=col, value=h)
         cell.fill = HEADER_FILL
         cell.font = HEADER_FONT
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-    ws.row_dimensions[1].height = 20
+    ws.row_dimensions[1].height = HEADER_ROW_HEIGHT
     for i, w in enumerate(col_widths, 1):
         ws.column_dimensions[ws.cell(row=1, column=i).column_letter].width = w
     ws.freeze_panes = "A2"
+
+
+def _add_table(ws, table_name):
+    """Add a named Excel Table covering just the header row for now.
+    Ref is updated to full data range before saving."""
+    tab = Table(displayName=table_name, ref=ws.dimensions)
+    # No TableStyleInfo — we apply our own cell-level styling
+    ws.add_table(tab)
+
+
+def _update_table_ref(ws, table_name):
+    """Extend the named table to cover all current rows."""
+    if table_name in ws.tables:
+        ws.tables[table_name].ref = ws.dimensions
 
 
 def _style_row(ws, row_num, values):
@@ -238,9 +306,60 @@ def _style_row(ws, row_num, values):
     for col, val in enumerate(values, 1):
         cell = ws.cell(row=row_num, column=col, value=val)
         cell.font = NORMAL_FONT
-        cell.alignment = Alignment(vertical="center")
+        cell.alignment = Alignment(vertical="center", indent=1)
         if fill:
             cell.fill = fill
+    ws.row_dimensions[row_num].height = BODY_ROW_HEIGHT
+
+
+def setup_workbook():
+    wb = Workbook()
+    wb.remove(wb.active)
+
+    # Sets sheet
+    ws_sets = wb.create_sheet("Sets")
+    _write_header(ws_sets,
+                  ["Set ID", "Set Name", "Series ID", "Series Name", "Set Type",
+                   "Total Cards", "Release Date"],
+                  [14, 28, 12, 20, 12, 14, 14])
+    _add_table(ws_sets, "Sets")
+
+    # Cards sheet — master reference, one row per card
+    ws_cards = wb.create_sheet("Cards")
+    _write_header(ws_cards, [
+        "Card ID", "Set ID", "Local ID", "Name", "Category", "Rarity",
+        "HP", "Types", "Stage", "Evolves From", "Pokédex ID", "Retreat Cost",
+        "Trainer Type", "Abilities", "Attacks", "Weaknesses", "Resistances", "Card Effect",
+        "Regulation Mark", "Legal (Standard)", "Legal (Expanded)",
+        "Illustrator", "Image (API URL)", "Image (Large)", "Image (Small)",
+        "Variants", "Price USD (TCGPlayer)", "Price EUR (Cardmarket)", "Last Updated (API)",
+    ], [
+        18, 12, 10, 28, 12, 26,
+        6, 14, 12, 20, 12, 12,
+        14, 40, 60, 20, 20, 40,
+        16, 16, 16,
+        24, 50, 40, 40,
+        30, 20, 20, 22,
+    ])
+    _add_table(ws_cards, "Cards")
+
+    return wb, ws_sets, ws_cards
+
+
+def open_or_create_workbook():
+    if os.path.exists(OUTPUT_PATH):
+        wb = load_workbook(OUTPUT_PATH)
+        return wb, wb["Sets"], wb["Cards"], True
+    wb, ws_sets, ws_cards = setup_workbook()
+    return wb, ws_sets, ws_cards, False
+
+
+def get_existing_set_ids(ws_sets):
+    existing = set()
+    for row in ws_sets.iter_rows(min_row=2, values_only=True):
+        if row[0]:
+            existing.add(row[0])
+    return existing
 
 
 def write_set_row(ws, row_num, set_info, total_cards, release_date):
@@ -251,44 +370,46 @@ def write_set_row(ws, row_num, set_info, total_cards, release_date):
     ])
 
 
-def write_card_row(ws, row_num, card, set_id):
-    card_id   = card.get("id", "")
-    local_id  = card.get("localId", "")
-    types     = ", ".join(card.get("types") or [])
-    image_api = card.get("image", "")
+def write_card_row(ws, row_num, card, set_info, variant_labels, img_large, img_small, usd_price, usd_to_aud):
+    legal    = card.get("legal") or {}
+    pricing  = card.get("pricing") or {}
+    cm       = pricing.get("cardmarket") or {}
+    eur_price = cm.get("trend") or cm.get("avg")
+    aud_price = round(usd_price * usd_to_aud, 2) if usd_price and usd_to_aud else ""
+
+    # Variant summary: e.g. "Normal | Reverse Holo" — useful for quick reference in master
+    variants_summary = " | ".join(variant_labels)
+
     _style_row(ws, row_num, [
-        card_id, set_id, local_id,
-        card.get("name", ""), card.get("rarity", ""),
-        card.get("hp"), types,
-        card.get("stage", ""), card.get("illustrator", ""),
+        card.get("id", ""),
+        set_info["set_id"],
+        card.get("localId", ""),
+        card.get("name", ""),
+        card.get("category", ""),
+        card.get("rarity", ""),
+        card.get("hp"),
+        _str_list(card.get("types")),
+        card.get("stage", ""),
+        card.get("evolveFrom", ""),
+        _str_list(card.get("dexId")),
+        card.get("retreat"),
+        card.get("trainerType", ""),
+        _str_abilities(card.get("abilities")),
+        _str_attacks(card.get("attacks")),
+        _str_weakness_resistance(card.get("weaknesses")),
+        _str_weakness_resistance(card.get("resistances")),
+        card.get("effect", ""),
         card.get("regulationMark", ""),
-        image_api, "",  # image_custom empty
-    ])
-
-
-def write_variant_row(ws, row_num, card, set_id, variant_label, image_api, usd_price, aud_rate):
-    card_id  = card.get("id", "")
-    local_id = card.get("localId", "")
-    name     = card.get("name", "")
-
-    # Normalise finish from label
-    if "Reverse" in variant_label:
-        finish = "Reverse Holo"
-    elif variant_label in ("Holo", "First Edition"):
-        finish = variant_label
-    else:
-        finish = "Normal"
-
-    variant_id  = f"{card_id}-{sanitize_filename(variant_label).lower()}"
-    aud_price   = round(usd_price * aud_rate, 2) if usd_price and aud_rate else ""
-
-    _style_row(ws, row_num, [
-        variant_id, card_id, set_id, local_id, name,
-        variant_label, finish,
-        image_api, "",       # image_custom empty
+        "Yes" if legal.get("standard") else "No",
+        "Yes" if legal.get("expanded") else "No",
+        card.get("illustrator", ""),
+        card.get("image", ""),
+        img_large,
+        img_small,
+        variants_summary,
         usd_price if usd_price else "",
-        aud_price,
-        "",                  # price_aud_ebay — Phase 2
+        eur_price if eur_price else "",
+        card.get("updated", ""),
     ])
 
 
@@ -296,30 +417,29 @@ def write_variant_row(ws, row_num, card, set_id, variant_label, image_api, usd_p
 # Main pipeline
 # ---------------------------------------------------------------------------
 
-def process_set(set_info, rarities, overrides, ws_sets, ws_cards, ws_variants,
-                sets_row, cards_row, variants_row, usd_to_aud, dry_run):
+def process_set(set_info, rarities, overrides, ws_sets, ws_cards,
+                sets_row, cards_row, usd_to_aud, dry_run):
 
-    set_id   = set_info["set_id"]
-    set_name = set_info["set_name"]
-    set_type = set_info["set_type"]
+    set_id    = set_info["set_id"]
+    set_name  = set_info["set_name"]
+    set_type  = set_info["set_type"]
+    series_id = set_info["series_id"]
 
     print(f"\n{'='*60}")
     print(f"  {set_name} ({set_id}) [{set_type}]")
     print(f"{'='*60}")
 
-    # Validate special sets have overrides before fetching anything
     if set_type == "special":
         set_override_keys = [k for k in overrides if k[0] == set_id]
         if not set_override_keys:
             print(f"  [SKIP] Special set {set_id} has no reviewed VariantOverrides entries.")
             print(f"         Run prep-special-set.py and complete the override sheet first.")
-            return sets_row, cards_row, variants_row
+            return sets_row, cards_row
 
-    # Fetch set metadata
     set_data = fetch(f"{TCGDEX_URL}/sets/{set_id}")
     if not set_data:
         print(f"  [ERROR] Could not fetch set data.")
-        return sets_row, cards_row, variants_row
+        return sets_row, cards_row
 
     card_stubs   = set_data.get("cards", [])
     release_date = set_data.get("releaseDate", "")
@@ -331,10 +451,11 @@ def process_set(set_info, rarities, overrides, ws_sets, ws_cards, ws_variants,
         write_set_row(ws_sets, sets_row, set_info, total_cards, release_date)
     sets_row += 1
 
-    errors = []
+    errors    = []
+    set_start = time.time()
 
     for i, stub in enumerate(card_stubs, 1):
-        local_id = stub.get("localId", "")
+        local_id  = stub.get("localId", "")
         card_name = stub.get("name", local_id)
 
         print(f"  [{i}/{total_cards}] {card_name} ({set_id}-{local_id})", end="")
@@ -345,7 +466,6 @@ def process_set(set_info, rarities, overrides, ws_sets, ws_cards, ws_variants,
             errors.append(f"{set_id}/{local_id}")
             continue
 
-        # Determine variants
         try:
             variant_labels = get_variants_for_card(card, set_info, rarities, overrides)
         except ValueError as e:
@@ -353,42 +473,40 @@ def process_set(set_info, rarities, overrides, ws_sets, ws_cards, ws_variants,
             errors.append(f"{set_id}/{local_id}")
             continue
 
-        print(f" -> {', '.join(variant_labels)}")
+        elapsed   = time.time() - set_start
+        rate      = i / elapsed
+        remaining = (total_cards - i) / rate if rate > 0 else 0
+        eta       = f"{int(remaining // 60)}m{int(remaining % 60):02d}s" if remaining >= 5 else "almost done"
+        print(f" -> {', '.join(variant_labels)}  [ETA {eta}]")
 
-        # Image: download once per card, reuse path for all variants
-        image_base = card.get("image", "")
-        image_path = ""
-        if image_base and not dry_run:
-            filename = sanitize_filename(f"{set_id}_{local_id}") + ".jpg"
-            filepath = os.path.join(IMG_DIR, filename)
-            if download_image(f"{image_base}/high.jpg", filepath):
-                image_path = filepath
+        # Download images once per card, shared across all variants
+        img_large, img_small = "", ""
+        if card.get("image") and not dry_run:
+            img_large, img_small = download_images(
+                card["image"], series_id, set_id, local_id, card.get("name", local_id)
+            )
 
-        # TCGPlayer USD price (normal variant price as reference)
-        usd_price = None
-        pricing = card.get("pricing", {}).get("tcgplayer", {})
-        normal_pricing = pricing.get("normal", {})
-        if normal_pricing:
-            usd_price = normal_pricing.get("marketPrice") or normal_pricing.get("midPrice")
+        # Pricing
+        pricing        = (card.get("pricing") or {}).get("tcgplayer") or {}
+        normal_pricing = pricing.get("normal") or {}
+        usd_price      = normal_pricing.get("marketPrice") or normal_pricing.get("midPrice")
 
         if not dry_run:
-            write_card_row(ws_cards, cards_row, card, set_id)
+            write_card_row(ws_cards, cards_row, card, set_info,
+                           variant_labels, img_large, img_small, usd_price, usd_to_aud)
         cards_row += 1
-
-        for label in variant_labels:
-            if not dry_run:
-                write_variant_row(ws_variants, variants_row, card, set_id,
-                                  label, image_base, usd_price, usd_to_aud)
-            variants_row += 1
 
         time.sleep(0.05)
 
-    print(f"\n  Done: {total_cards} cards processed, {len(errors)} errors")
+    set_elapsed  = time.time() - set_start
+    rate_per_min = (total_cards / set_elapsed * 60) if set_elapsed > 0 else 0
+    print(f"\n  Done: {total_cards} cards, {len(errors)} errors | "
+          f"{int(set_elapsed // 60)}m{int(set_elapsed % 60):02d}s | {rate_per_min:.1f} cards/min")
     if errors:
         for e in errors:
             print(f"    - {e}")
 
-    return sets_row, cards_row, variants_row
+    return sets_row, cards_row
 
 
 def main():
@@ -403,10 +521,11 @@ def main():
         print("Run scripts/create-input-workbook.py first.")
         return
 
+    run_start = time.time()
     print("Loading reference workbook...")
-    ref_wb   = load_workbook(INPUT_PATH)
-    sets     = load_sets(ref_wb, target_set_id=args.set)
-    rarities = load_rarities(ref_wb)
+    ref_wb    = load_workbook(INPUT_PATH)
+    sets      = load_sets(ref_wb, target_set_id=args.set)
+    rarities  = load_rarities(ref_wb)
     overrides = load_overrides(ref_wb)
 
     if not sets:
@@ -423,31 +542,45 @@ def main():
 
     dry_run = args.dry_run
     if not dry_run:
-        os.makedirs(IMG_DIR, exist_ok=True)
         os.makedirs(os.path.join("data", "output"), exist_ok=True)
-        wb, ws_sets, ws_cards, ws_variants = setup_workbook()
+        wb, ws_sets, ws_cards, is_existing = open_or_create_workbook()
+        existing_set_ids = get_existing_set_ids(ws_sets) if is_existing else set()
+        sets_row  = ws_sets.max_row + 1
+        cards_row = ws_cards.max_row + 1
+        if existing_set_ids:
+            print(f"\n  Existing catalogue — {len(existing_set_ids)} set(s) already present: "
+                  f"{', '.join(sorted(existing_set_ids))}")
     else:
-        wb = ws_sets = ws_cards = ws_variants = None
+        wb = ws_sets = ws_cards = None
+        existing_set_ids = set()
+        sets_row = cards_row = 2
         print("  [DRY RUN] No files will be written.")
 
-    sets_row = cards_row = variants_row = 2
+    start_sets_row  = sets_row
+    start_cards_row = cards_row
 
     for set_info in sets.values():
-        sets_row, cards_row, variants_row = process_set(
+        if set_info["set_id"] in existing_set_ids:
+            print(f"\n  [SKIP] {set_info['set_name']} ({set_info['set_id']}) — already in catalogue")
+            continue
+        sets_row, cards_row = process_set(
             set_info, rarities, overrides,
-            ws_sets, ws_cards, ws_variants,
-            sets_row, cards_row, variants_row,
+            ws_sets, ws_cards,
+            sets_row, cards_row,
             usd_to_aud, dry_run,
         )
 
+    run_elapsed = time.time() - run_start
     if not dry_run:
+        _update_table_ref(ws_sets,  "Sets")
+        _update_table_ref(ws_cards, "Cards")
         wb.save(OUTPUT_PATH)
         print(f"\n{'='*60}")
         print(f"Catalogue saved: {OUTPUT_PATH}")
-        print(f"  Sets:     {sets_row - 2}")
-        print(f"  Cards:    {cards_row - 2}")
-        print(f"  Variants: {variants_row - 2}")
-        print(f"  Images:   {IMG_DIR}/")
+        print(f"  Sets added:  {sets_row  - start_sets_row}")
+        print(f"  Cards added: {cards_row - start_cards_row}")
+        print(f"  Images:      {IMG_DIR}/")
+    print(f"  Total time: {int(run_elapsed // 60)}m{int(run_elapsed % 60):02d}s")
 
 
 if __name__ == "__main__":
