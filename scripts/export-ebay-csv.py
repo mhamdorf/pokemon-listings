@@ -85,6 +85,7 @@ CSV_COLUMNS = [
     "C:Brand",
     "C:Set",
     "C:Language",
+    "C:Game",
 ]
 
 
@@ -288,7 +289,6 @@ def main():
         parent["Duration"]           = DURATION
         parent["Description"]        = DESCRIPTION_TEMPLATE.format(set_name=set_name)
         parent["RelationshipDetails"] = parent_rel
-        parent["P:UPC"]              = "Does not apply"
         parent["CustomLabel"]        = f"{custom_label_base}-LISTING"
         parent["PicURL"]             = hero_pic
         parent["ShippingProfileName"] = args.shipping_profile
@@ -298,6 +298,7 @@ def main():
         parent["C:Brand"]            = BRAND
         parent["C:Set"]              = set_name
         parent["C:Language"]         = LANGUAGE
+        parent["C:Game"]             = "Pokémon TCG"
         writer.writerow(parent)
 
         # Child rows — one per in-stock variant
