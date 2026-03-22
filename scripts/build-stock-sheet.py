@@ -48,9 +48,11 @@ COLUMNS = [
     ("Name",          28, False),
     ("Variant Label", 34, False),
     ("Qty",            8, True),
+    ("Price",         10, True),
 ]
 
-QTY_COL_IDX = 6   # 1-based
+QTY_COL_IDX   = 6   # 1-based
+PRICE_COL_IDX = 7   # 1-based
 
 
 # ---------------------------------------------------------------------------
@@ -74,21 +76,24 @@ def variant_sort_key(variant: str) -> tuple:
         return (3, variant)
 
 
-def load_existing_qtys(ws) -> dict:
-    """Read existing Variant ID → Qty mapping from the Stock sheet."""
-    qtys = {}
+def load_existing_data(ws) -> dict:
+    """Read existing Variant ID → {qty, price} mapping from the Stock sheet."""
+    data = {}
     headers = [cell.value for cell in ws[1]]
     try:
         vid_idx = headers.index("Variant ID")
         qty_idx = headers.index("Qty")
     except ValueError:
-        return qtys
+        return data
+    price_idx = headers.index("Price") if "Price" in headers else None
     for row in ws.iter_rows(min_row=2, values_only=True):
         vid = row[vid_idx]
-        qty = row[qty_idx]
         if vid:
-            qtys[vid] = qty if qty is not None else 0
-    return qtys
+            data[vid] = {
+                "qty":   row[qty_idx] if row[qty_idx] is not None else 0,
+                "price": row[price_idx] if price_idx is not None else None,
+            }
+    return data
 
 
 def write_header(ws):
@@ -102,12 +107,17 @@ def write_header(ws):
     ws.freeze_panes = "A2"
 
 
-def write_data_row(ws, row_idx: int, values: list, existing_qty: int):
+def write_data_row(ws, row_idx: int, values: list, existing_qty: int, existing_price):
     is_alt = (row_idx % 2 == 0)
 
     for col_idx, ((_, __, is_input), value) in enumerate(zip(COLUMNS, values), 1):
         if col_idx == QTY_COL_IDX:
             cell           = ws.cell(row=row_idx, column=col_idx, value=existing_qty)
+            cell.fill      = INPUT_FILL
+            cell.font      = NORMAL_FONT
+            cell.alignment = Alignment(vertical="center", horizontal="center")
+        elif col_idx == PRICE_COL_IDX:
+            cell           = ws.cell(row=row_idx, column=col_idx, value=existing_price)
             cell.fill      = INPUT_FILL
             cell.font      = NORMAL_FONT
             cell.alignment = Alignment(vertical="center", horizontal="center")
@@ -198,32 +208,34 @@ def main():
     if os.path.exists(EBAY_PATH):
         wb = openpyxl.load_workbook(EBAY_PATH)
         if "Stock" in wb.sheetnames:
-            existing_qtys = load_existing_qtys(wb["Stock"])
-            print(f"[INFO] Loaded {len(existing_qtys)} existing Qty entries from ebay.xlsx")
+            existing_data = load_existing_data(wb["Stock"])
+            print(f"[INFO] Loaded {len(existing_data)} existing rows from ebay.xlsx")
             del wb["Stock"]
         else:
-            existing_qtys = {}
+            existing_data = {}
         ws = wb.create_sheet("Stock", 0)
     else:
-        existing_qtys = {}
+        existing_data = {}
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = "Stock"
 
-    new_count      = 0
+    new_count       = 0
     preserved_count = 0
 
     write_header(ws)
 
     for row_idx, (local_id_int, local_id_raw, card_id, name, variant, variant_id) in enumerate(new_rows, 2):
-        existing_qty = existing_qtys.get(variant_id, 0)
-        if variant_id in existing_qtys:
+        existing = existing_data.get(variant_id, {})
+        existing_qty   = existing.get("qty", 0)
+        existing_price = existing.get("price", None)
+        if variant_id in existing_data:
             preserved_count += 1
         else:
             new_count += 1
 
-        values = [variant_id, set_id, local_id_raw, name, variant, existing_qty]
-        write_data_row(ws, row_idx, values, existing_qty)
+        values = [variant_id, set_id, local_id_raw, name, variant, existing_qty, existing_price]
+        write_data_row(ws, row_idx, values, existing_qty, existing_price)
 
     add_table(ws, last_row=len(new_rows) + 1)
 
