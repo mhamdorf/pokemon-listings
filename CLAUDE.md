@@ -27,6 +27,7 @@ All scripts run from the project root via `uv run python scripts/<name>.py`.
 | --- | --- |
 | `build-catalogue.py` | Main pipeline — incremental builds, appends new sets to `catalogue.xlsx` |
 | `prep-special-set.py` | One-time prep for special sets — drafts VariantOverrides via Bulbapedia |
+| `build-stock-sheet.py` | Seeds/updates the Stock sheet in `ebay.xlsx` from the catalogue |
 | `create-input-workbook.py` | Creates `data/input/reference.xlsx` (run once to initialise) |
 | `explore-card-schema.py` | Dev tool — inspect all API fields for a given card |
 | `explore-rarities.py` | Dev tool — inspect all rarities and their variant flags across sets |
@@ -45,6 +46,9 @@ uv run python scripts/build-catalogue.py --set sv10 --dry-run
 
 # Prepare a special set for manual review
 uv run python scripts/prep-special-set.py --set me02.5 --bulbapedia-name Ascended_Heroes
+
+# Seed/update the Stock sheet in ebay.xlsx for a set
+uv run python scripts/build-stock-sheet.py --set me02.5 --max-card 217
 ```
 
 ## Folder structure
@@ -53,7 +57,7 @@ uv run python scripts/prep-special-set.py --set me02.5 --bulbapedia-name Ascende
 pokemon-listings/
 ├── scripts/              # pipeline and utility scripts
 ├── data/
-│   ├── input/            # reference.xlsx — commit this
+│   ├── input/            # reference.xlsx, ebay.xlsx — commit these
 │   └── output/           # catalogue.xlsx, images/ — gitignored
 ├── docs/
 │   ├── tutorials/
@@ -87,7 +91,7 @@ images/small/{series_id}/{set_id}/{local_id}_{card-name-slug}.jpg
 - **One image per card**, shared across all variants — no per-variant images.
 - **Rarity rules** live in `data/input/reference.xlsx` (Rarities sheet), not hardcoded. Unknown rarities default to `Holo` with no reverse holo.
 - **Pricing:** TCGPlayer USD and Cardmarket EUR pulled from TCGdex at build time, converted to AUD via Frankfurter. Prices go stale — not updated on Power Query refresh.
-- **Master catalogue is append-only reference data** — inventory, listings, and eBay pricing live in separate workbooks (future).
+- **Two-workbook eBay design** — `catalogue.xlsx` is pipeline output (never manually edited). `data/input/ebay.xlsx` is the eBay workbook: Stock sheet (Variant ID + Qty, user-maintained) + a Power Query Listing view that joins Stock to the catalogue. The stock sheet is seeded by `build-stock-sheet.py` and preserved across re-runs.
 
 ## Design preferences
 

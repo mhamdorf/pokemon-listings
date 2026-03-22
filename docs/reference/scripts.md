@@ -67,6 +67,33 @@ After running, open `reference.xlsx`, review the `VariantOverrides` sheet, corre
 
 ---
 
+## build-stock-sheet.py
+
+Seeds (or updates) the Stock sheet in `data/input/ebay.xlsx` from the master catalogue. One row per card variant, with a Qty column for the user to fill in. Existing Qty values are preserved when re-run — only new rows are added.
+
+Run this once per set after it has been built into the catalogue.
+
+### Options
+
+| Option | Description |
+| --- | --- |
+| `--set <set_id>` | Set ID to seed stock rows for (required) |
+| `--max-card <n>` | Only include cards with a numeric Local ID ≤ n (e.g. `--max-card 217` to exclude secret rares) |
+
+### Example
+
+```bash
+uv run python scripts/build-stock-sheet.py --set me02.5 --max-card 217
+```
+
+### What it writes
+
+- Stock sheet in `data/input/ebay.xlsx` — creates the file if absent, updates it if present
+
+After running, open `ebay.xlsx` and fill in the Qty column (highlighted yellow) for each variant you have in stock. Then add the Listing Power Query view — see [Create the Listing view](../how-to/create-listing-view.md).
+
+---
+
 ## create-input-workbook.py
 
 Creates `data/input/reference.xlsx` from scratch with the correct sheet structure. Run this once when setting up the project for the first time. Does not overwrite an existing file.
