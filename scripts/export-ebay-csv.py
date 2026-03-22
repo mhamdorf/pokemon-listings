@@ -57,9 +57,9 @@ DESCRIPTION_TEMPLATE = """\
     <li>Checkout once — one shipping fee covers everything</li>
   </ol>
   <h3>Packaging &amp; postage</h3>
-  <p>FREE standard postage Australia-wide. Every card is sleeved and placed in a rigid top loader before being posted in a sturdy envelope.</p>
+  <p>FREE untracked letter post Australia-wide. Every card is sleeved and placed in a rigid top loader before being posted in a sturdy envelope.</p>
   <h3>Returns</h3>
-  <p>30-day returns accepted. Message us first and we'll sort it out.</p>
+  <p>No returns accepted. Please ask any questions before purchasing — happy to provide additional photos or condition details.</p>
 </div>"""
 
 CSV_COLUMNS = [
